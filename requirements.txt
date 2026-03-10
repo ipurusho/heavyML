@@ -1,0 +1,11 @@
+pandas
+tqdm
+kaggle
+requests
+beautifulsoup4
+lxml
+cloudscraper
+python-dotenv
+numpy
+scikit-learn
+torch --index-url https://download.pytorch.org/whl/cpu

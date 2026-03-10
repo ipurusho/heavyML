@@ -1,0 +1,39 @@
+# Data files (large, downloaded via pipeline)
+data/raw/*.csv
+data/raw/*.zip
+data/musicbrainz/*
+!data/musicbrainz/.gitkeep
+data/acousticbrainz/*
+!data/acousticbrainz/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Model checkpoints (large binary files)
+model/checkpoints/*
+!model/checkpoints/.gitkeep
+
+# MusicBrainz dump
+*.tar.bz2
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
