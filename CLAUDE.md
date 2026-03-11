@@ -29,18 +29,20 @@ MA Band ID → (MusicBrainz URL relationships) → MB Artist MBID
                                      (BPM, energy, key, loudness...)
 ```
 
-### Model Architecture (Phase 1)
-Two-tower MLP with contrastive learning:
+### Model Architecture
+Siamese MLP with contrastive learning:
 ```
-Band audio fingerprint (~25 dims)  →  Tower MLP (25→128→64)  →  L2-normalized 64-dim embedding
+Band audio fingerprint (20 dims)  →  MLP (20→32→16)  →  L2-normalized 16-dim embedding
 ```
+- **Parameters:** 1,264
 - **Loss:** InfoNCE (noise-contrastive estimation)
 - **Positives:** Metal Archives similar artist pairs (scraped)
-- **Negatives:** In-batch random + hard negatives mined by similarity score
-- **Eval:** Recall@10, genre purity
+- **Negatives:** In-batch random
+- **Eval:** Recall@10, MRR, genre purity, Last.fm agreement
 
-### Phase 2 (after Phase 1 ships)
-Fine-tune a small LLM (Phi-3 mini or Llama 3.2 3B) with QLoRA on Metal Archives data to generate natural-language band descriptions explaining sonic similarity.
+### v2 Improvements (after v1 ships)
+- Richer features: Spotify audio features, Essentia, genre/tag features, graph-based signal
+- Fine-tune a small LLM (Phi-3 mini or Llama 3.2 3B) with QLoRA on Metal Archives data to generate natural-language band descriptions explaining sonic similarity.
 
 ---
 
@@ -67,24 +69,18 @@ heavyML/
 │   ├── 03_ma_similar_scraper.py     ← scrape MA similar artists (primary ground truth)
 │   ├── 03b_lastfm_labels.py         ← Last.fm similar artists (secondary / held-out eval)
 │   ├── 04_feature_matrix.py         ← aggregate track features → band fingerprints
-│   └── 05_train_val_split.py        ← stratified split
+│   ├── 05_train_val_split.py        ← stratified split
+│   └── 06_export_embeddings.py      ← pre-compute embeddings + generate pgvector SQL
 ├── model/
 │   ├── tower.py                     ← MLP tower definition (raw PyTorch)
 │   ├── loss.py                      ← InfoNCE implementation
 │   ├── dataset.py                   ← contrastive pair sampling
 │   ├── train.py                     ← training loop
-│   └── evaluate.py                  ← Recall@k, genre purity metrics
-│   └── 06_export_embeddings.py      ← pre-compute embeddings + generate pgvector SQL
-├── notebooks/
-│   ├── 01_eda.ipynb                 ← MA dataset exploration
-│   ├── 02_audio_features_eda.ipynb  ← AcousticBrainz feature distributions
-│   └── 03_loss_curves.ipynb         ← training analysis
-├── phase2_finetune/                 ← LLM fine-tuning (Phase 2, after Phase 1 ships)
-│   ├── prepare_data.py
-│   ├── finetune.py
-│   ├── evaluate.py
-│   └── inference.py
+│   ├── evaluate.py                  ← Recall@k, MRR, genre purity, Last.fm agreement
+│   └── baseline_cosine.py           ← cosine similarity baseline
+├── notebooks/                       ← (empty, for future EDA)
 ├── requirements.txt
+├── LICENSE
 └── .env.example
 ```
 
@@ -92,38 +88,35 @@ heavyML/
 
 ## Current Status
 
-### Completed
-- [x] Project scoped and architecture decided
-- [x] MA Kaggle dataset downloaded (183k bands, 636k releases)
-- [x] Dataset explored: genre distribution, discography stats, data quality assessment
-- [x] **Pipeline step 01** — MusicBrainz linkage via TSV extraction (no PostgreSQL needed)
-  - 46,229 MA bands linked to MBIDs out of 183,397 → **25.2% coverage**
-  - MB dump: 20260307, extracted 3 tables (artist, url, l_artist_url) from `mbdump.tar.bz2`
-  - Spot-checked: Metallica, Iron Maiden, Megadeth, Black Sabbath, Slayer all correct
-  - Output: `data/processed/ma_mb_linkage.csv` (ma_band_id, ma_name, mbid, mb_name)
-  - Verdict: **>30k threshold met — proceed with pipeline**
+### Completed (v1 pipeline)
+- [x] **Step 00** — MA Kaggle dataset downloaded (183k bands, 636k releases)
+- [x] **Step 01** — MusicBrainz linkage: 46,229 / 183,397 MA bands linked to MBIDs (25.2%)
+  - Fixed: Kaggle CSV has 471 duplicate Band IDs — dedup prefers rows where ma_name == mb_name
+- [x] **Step 02** — AcousticBrainz feature extraction: 7 audio features (BPM, energy, loudness, key, onset rate, MFCC, danceability) + key/scale encoding → 20-dim feature vector per band
+- [x] **Step 03** — MA similar artists scraped: 184,853 pairs from 7,420 bands
+- [x] **Step 03b** — Last.fm similar artists fetched: 3.37M pairs from 46,229 bands
+- [x] **Step 04** — Contrastive training pairs: 115,846 valid pairs (both bands have features)
+- [x] **Step 05** — Train/val/test split: 81,551 / 16,739 / 17,556 (zero leakage)
+- [x] **Training** — Siamese MLP, early stopping epoch 50 (best epoch 40), val_loss=5.2109
+- [x] **Step 06** — Embeddings exported: 16,079 bands × 16-dim, pgvector SQL (5.9MB)
+- [x] **Security scan** — passed (torch.load weights_only, HTTPS, SQL escaping, no secrets)
+- [x] **GitHub repo** — initial commit pushed
 
-### In Progress
-- [ ] **Pipeline step 02** — AcousticBrainz feature extraction (script written, needs AB data download)
-  - Script: `pipeline/02_ab_features.py`
-  - Downloads additional MB tables (`artist_credit_name`, `recording`) from same mbdump.tar.bz2
-  - Linkage chain: artist MBID → artist.id → artist_credit_name → recording → recording MBID → AB features
-  - AB feature CSVs needed: 3 CSV files (~3GB compressed) from https://acousticbrainz.org/download
-    - `acousticbrainz_lowlevel.csv`: mbid, average_loudness, dynamic_complexity, mfcc_zero_mean
-    - `acousticbrainz_rhythm.csv`: mbid, bpm, danceability, onset_rate
-    - `acousticbrainz_tonal.csv`: mbid, key_key, key_scale, tuning_frequency
-  - Place CSVs in `data/acousticbrainz/`
-  - Output: `data/processed/ma_ab_features.csv` (band-level aggregated audio features)
+### Model Evaluation (v1)
+| Metric | Siamese MLP | Random | Lift |
+|--------|------------|--------|------|
+| Recall@10 | 0.0168 | 0.0014 | 12.4x |
+| MRR | 0.0537 | 0.0034 | 15.9x |
+| Genre Purity@10 | 0.1580 | 0.0772 | 2.0x |
+| Last.fm Agreement@10 | 0.0029 | 0.0005 | 5.5x |
+
+Hit rate (≥1 correct in top 10): 11.8% vs MA, 2.8% vs Last.fm.
+Main limitation: 20-dim AcousticBrainz features too narrow, embeddings tightly clustered.
 
 ### Pending
-- [ ] Pipeline step 03 — Scrape MA similar artists (primary ground truth)
-- [ ] Pipeline step 03b — Last.fm similar artists (secondary / held-out eval)
-- [ ] Pipeline step 04 — Band-level audio fingerprint aggregation
-- [ ] Pipeline step 05 — Train/val/test split
-- [ ] Model training (two-tower, InfoNCE)
-- [ ] Evaluation harness
-- [ ] Embedding export + pgvector SQL generation (pipeline step 06)
-- [ ] Metaloreian integration (pgvector image, Go handler, migration)
+- [ ] Metaloreian integration (pgvector image swap, Go handler, migration, deploy workflow)
+- [ ] GitHub Releases workflow for deployment artifacts (load_embeddings.sql + best_model.pt)
+- [ ] v2: richer features (Spotify audio, genre tags, graph signal) for better recommendation quality
 
 ---
 
@@ -183,8 +176,8 @@ heavyML/
 ## Infrastructure
 
 ### Training
-- **GPU:** Google Colab free tier (T4, 16GB VRAM) or Vast.ai (~$0.20/hr)
-- **Framework:** PyTorch + no HuggingFace for Phase 1 (raw PyTorch is the point)
+- **GPU:** CPU-only (model is 1,264 params, trains in ~2 min on CPU)
+- **Framework:** Raw PyTorch (no HuggingFace)
 
 ### Serving (production)
 - **Embeddings:** pgvector on existing Metaloreian PostgreSQL instance
@@ -192,7 +185,8 @@ heavyML/
 - **Docker:** Swap `postgres:16-alpine` → `pgvector/pgvector:pg16` in Metaloreian docker-compose
 - **Data load:** `psql $DATABASE_URL < data/processed/load_embeddings.sql`
 - **Runtime compute:** zero — inference is a pgvector ANN query
-- **LLM (Phase 2):** pre-generated descriptions cached in Postgres
+- **Deployment bridge:** GitHub Releases — heavyML publishes load_embeddings.sql, Metaloreian deploy workflow downloads it
+- **LLM (v2):** pre-generated descriptions cached in Postgres
 
 ---
 
