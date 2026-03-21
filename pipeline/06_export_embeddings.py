@@ -154,9 +154,10 @@ def main() -> None:
     hidden_dim = checkpoint["hidden_dim"]
     embed_dim = checkpoint["embed_dim"]
     dropout = checkpoint["dropout"]
+    n_audio_dims = checkpoint.get("n_audio_dims", input_dim)  # fallback for v1 models
     feature_names = checkpoint.get("feature_names", [])
 
-    print(f"  Architecture: {input_dim} -> {hidden_dim} -> {embed_dim}")
+    print(f"  Architecture: {input_dim} -> {hidden_dim} -> {embed_dim} (audio={n_audio_dims})")
     print(f"  Trained epoch: {checkpoint.get('epoch', '?')}")
     print(f"  Val loss: {checkpoint.get('val_loss', '?')}")
     if feature_names:
@@ -170,6 +171,7 @@ def main() -> None:
         hidden_dim=hidden_dim,
         embed_dim=embed_dim,
         dropout=dropout,
+        n_audio_dims=n_audio_dims,
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -183,7 +185,7 @@ def main() -> None:
         print(f"ERROR: Feature file not found: {FEATURES_CSV}")
         sys.exit(1)
 
-    band_ids, feature_matrix, current_feature_names = preprocess_features(FEATURES_CSV)
+    band_ids, feature_matrix, current_feature_names = preprocess_features(FEATURES_CSV, METAL_BANDS_CSV)
     n_bands, actual_input_dim = feature_matrix.shape
     print(f"  Bands: {n_bands:,}")
     print(f"  Feature dims: {actual_input_dim}")
