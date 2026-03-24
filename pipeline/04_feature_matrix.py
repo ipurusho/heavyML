@@ -36,6 +36,7 @@ PROCESSED_DIR = DATA_DIR / "processed"
 
 FEATURES_CSV = PROCESSED_DIR / "ma_ab_features.csv"
 SIMILAR_CSV = PROCESSED_DIR / "ma_similar_artists.csv"
+METAL_BANDS_CSV = DATA_DIR / "raw" / "metal_bands.csv"
 
 OUTPUT_MATRIX = PROCESSED_DIR / "feature_matrix.npy"
 OUTPUT_BAND_IDS = PROCESSED_DIR / "feature_band_ids.csv"
@@ -61,6 +62,96 @@ KEY_CLASSES = ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"]
 
 # key_scale: binary encoding (major=1, minor=0)
 SCALE_MAP = {"major": 1, "minor": 0}
+
+# ---------------------------------------------------------------------------
+# Genre tag encoding (v2 feature)
+# ---------------------------------------------------------------------------
+# Normalize common redundancies in MA genre strings
+GENRE_NORMALIZE = {
+    "Death": "Death Metal",
+    "Black": "Black Metal",
+    "Heavy": "Heavy Metal",
+    "Thrash": "Thrash Metal",
+    "Doom": "Doom Metal",
+    "Sludge": "Sludge Metal",
+    "Stoner": "Stoner Metal",
+    "Melodic Death": "Melodic Death Metal",
+    "Progressive": "Progressive Metal",
+    "Crossover": "Crossover Thrash",
+    "Rock": "Hard Rock",
+}
+
+# Top genres by band count (>500 bands in MA dataset), used for multi-hot encoding
+TOP_GENRES = [
+    "Death Metal", "Black Metal", "Thrash Metal", "Heavy Metal",
+    "Melodic Death Metal", "Grindcore", "Power Metal", "Groove Metal",
+    "Metalcore", "Brutal Death Metal", "Progressive Metal", "Hard Rock",
+    "Doom Metal", "Raw Black Metal", "Sludge Metal", "Crossover Thrash",
+    "Stoner Metal", "Gothic Metal", "Deathcore", "Speed Metal",
+    "Symphonic Metal", "Folk Metal", "Atmospheric Black Metal",
+    "Industrial Metal", "Symphonic Black Metal", "Technical Death Metal",
+    "Progressive Death Metal", "Melodic Black Metal", "Post-Metal",
+    "Viking Metal", "Pagan Metal", "Punk", "Alternative Metal",
+    "Ambient", "Depressive Black Metal", "Melodic Metalcore",
+    "Blackened Death Metal", "Drone Metal", "Post-Black Metal",
+    "Funeral Doom Metal", "Crust Punk", "Grunge", "Djent",
+    "Melodic Power Metal", "Nu-Metal", "Psychedelic",
+    "Post-Hardcore", "Post-Punk", "War Metal", "Neofolk",
+]
+
+
+def load_genre_tags() -> dict[int, list[str]]:
+    """Load and parse genre tags from metal_bands.csv.
+
+    Returns dict mapping ma_band_id -> list of normalized genre tokens.
+    """
+    print(f"\n[LOAD] Loading genre tags from {METAL_BANDS_CSV} ...")
+    if not METAL_BANDS_CSV.exists():
+        print(f"  WARNING: {METAL_BANDS_CSV} not found. Genre features will be skipped.")
+        return {}
+
+    df = pd.read_csv(METAL_BANDS_CSV, low_memory=False)
+    genre_map: dict[int, list[str]] = {}
+
+    for _, row in df.iterrows():
+        try:
+            band_id = int(row["Band ID"])
+        except (ValueError, TypeError):
+            continue
+        genre_str = row.get("Genre", "")
+        if pd.isna(genre_str) or not genre_str:
+            continue
+
+        tokens = []
+        for token in genre_str.split("/"):
+            token = token.strip()
+            token = GENRE_NORMALIZE.get(token, token)
+            tokens.append(token)
+        genre_map[band_id] = tokens
+
+    print(f"  Loaded genre tags for {len(genre_map):,} bands")
+    return genre_map
+
+
+def build_genre_matrix(band_ids: np.ndarray, genre_map: dict[int, list[str]]) -> np.ndarray:
+    """Build multi-hot genre encoding matrix.
+
+    Returns ndarray of shape (len(band_ids), len(TOP_GENRES)).
+    """
+    genre_to_idx = {g: i for i, g in enumerate(TOP_GENRES)}
+    matrix = np.zeros((len(band_ids), len(TOP_GENRES)), dtype=np.float64)
+
+    n_matched = 0
+    for i, bid in enumerate(band_ids):
+        tags = genre_map.get(int(bid), [])
+        for tag in tags:
+            if tag in genre_to_idx:
+                matrix[i, genre_to_idx[tag]] = 1.0
+                n_matched += 1
+
+    n_with_genre = (matrix.sum(axis=1) > 0).sum()
+    print(f"  Genre multi-hot: {len(TOP_GENRES)} columns, {n_with_genre:,}/{len(band_ids):,} bands have ≥1 genre tag")
+    return matrix
 
 
 def load_features() -> pd.DataFrame:
@@ -129,7 +220,7 @@ def load_similar_pairs() -> pd.DataFrame:
     return df
 
 
-def build_feature_matrix(df: pd.DataFrame) -> tuple[np.ndarray, pd.DataFrame, StandardScaler]:
+def build_feature_matrix(df: pd.DataFrame, genre_map: dict[int, list[str]] | None = None) -> tuple[np.ndarray, pd.DataFrame, StandardScaler]:
     """Build the normalized feature matrix from band-level features.
 
     Returns:
@@ -178,10 +269,24 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[np.ndarray, pd.DataFrame, St
         scale_values = np.nan_to_num(scale_values, nan=0.0)
     print(f"  Scale binary: 1 column (major=1, minor=0)")
 
-    # ---- 6. Concatenate all features ----
-    matrix = np.hstack([numeric_scaled, key_onehot, scale_values])
+    # ---- 6. Multi-hot encode genre tags (v2) ----
+    if genre_map:
+        band_id_array = df["ma_band_id"].values
+        genre_matrix = build_genre_matrix(band_id_array, genre_map)
+    else:
+        genre_matrix = np.zeros((len(df), 0), dtype=np.float64)
+
+    # ---- 7. Scale genre features to compete with z-scored audio ----
+    if genre_matrix.shape[1] > 0:
+        GENRE_WEIGHT = 1.0
+        genre_matrix *= GENRE_WEIGHT
+        print(f"  Genre features scaled by {GENRE_WEIGHT}x")
+
+    # ---- 8. Concatenate all features ----
+    matrix = np.hstack([numeric_scaled, key_onehot, scale_values, genre_matrix])
+    n_genre = genre_matrix.shape[1] if genre_matrix.shape[1] > 0 else 0
     print(f"\n  Final feature matrix shape: {matrix.shape}")
-    print(f"    {len(NUMERIC_FEATURES)} numeric + {len(KEY_CLASSES)} key_onehot + 1 scale = {matrix.shape[1]} total dims")
+    print(f"    {len(NUMERIC_FEATURES)} numeric + {len(KEY_CLASSES)} key_onehot + 1 scale + {n_genre} genre = {matrix.shape[1]} total dims")
 
     # ---- 7. Build band_id index ----
     band_ids_df = df[["ma_band_id"]].copy()
@@ -248,6 +353,7 @@ def print_stats(matrix: np.ndarray, band_ids: pd.DataFrame, valid_pairs: pd.Data
         NUMERIC_FEATURES
         + [f"key_{k}" for k in KEY_CLASSES]
         + ["scale_major"]
+        + [f"genre_{g.lower().replace(' ', '_')}" for g in TOP_GENRES]
     )
     for i, name in enumerate(feature_names):
         col = matrix[:, i]
@@ -263,9 +369,10 @@ def main():
     # ---- 1. Load data ----
     features_df = load_features()
     pairs_df = load_similar_pairs()
+    genre_map = load_genre_tags()
 
     # ---- 2. Build feature matrix ----
-    matrix, band_ids_df, scaler = build_feature_matrix(features_df)
+    matrix, band_ids_df, scaler = build_feature_matrix(features_df, genre_map)
 
     # ---- 3. Filter valid pairs ----
     valid_band_ids = set(band_ids_df["band_id"].values)

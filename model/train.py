@@ -72,8 +72,8 @@ EMBEDDINGS_CSV = PROCESSED_DIR / "siamese_embeddings.csv"
 # ---------------------------------------------------------------------------
 # Hyperparameters
 # ---------------------------------------------------------------------------
-HIDDEN_DIM = 32
-EMBED_DIM = 16
+HIDDEN_DIM = 64
+EMBED_DIM = 32
 DROPOUT = 0.2
 LEARNING_RATE = 1e-3
 BATCH_SIZE = 256
@@ -232,7 +232,7 @@ def main():
         print("Run pipeline step 02 first.")
         sys.exit(1)
 
-    band_ids, feature_matrix, feature_names = preprocess_features(FEATURES_CSV)
+    band_ids, feature_matrix, feature_names = preprocess_features(FEATURES_CSV, METAL_BANDS_CSV)
     n_bands, input_dim = feature_matrix.shape
     print(f"  Bands: {n_bands:,}")
     print(f"  Feature dims: {input_dim} ({', '.join(feature_names)})")
@@ -322,15 +322,20 @@ def main():
     # 4. Initialise model, loss, optimizer, scheduler
     # ------------------------------------------------------------------
     print("\n--- Initialising model ---")
+    # Audio dims = 7 numeric + 12 key one-hot + 1 scale = 20
+    N_AUDIO_DIMS = 20
+
     model = BandEncoder(
         input_dim=train_ds.input_dim,
         hidden_dim=HIDDEN_DIM,
         embed_dim=EMBED_DIM,
         dropout=DROPOUT,
+        n_audio_dims=N_AUDIO_DIMS,
     ).to(device)
 
+    n_genre_dims = train_ds.input_dim - N_AUDIO_DIMS
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  Architecture: {train_ds.input_dim} -> {HIDDEN_DIM} -> {EMBED_DIM}")
+    print(f"  Architecture: two-branch ({N_AUDIO_DIMS} audio + {n_genre_dims} genre) -> {HIDDEN_DIM} -> {EMBED_DIM}")
     print(f"  Parameters: {n_params:,}")
     print(f"  Dropout: {DROPOUT}")
 
@@ -389,6 +394,7 @@ def main():
                 "hidden_dim": HIDDEN_DIM,
                 "embed_dim": EMBED_DIM,
                 "dropout": DROPOUT,
+                "n_audio_dims": N_AUDIO_DIMS,
                 "feature_names": feature_names,
             }, BEST_MODEL_PATH)
             improved = " *"

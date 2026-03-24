@@ -38,9 +38,42 @@ NUMERIC_COLS = [
     "tuning_frequency",
 ]
 
+# Genre normalization and top genres (must match pipeline/04_feature_matrix.py)
+GENRE_NORMALIZE = {
+    "Death": "Death Metal",
+    "Black": "Black Metal",
+    "Heavy": "Heavy Metal",
+    "Thrash": "Thrash Metal",
+    "Doom": "Doom Metal",
+    "Sludge": "Sludge Metal",
+    "Stoner": "Stoner Metal",
+    "Melodic Death": "Melodic Death Metal",
+    "Progressive": "Progressive Metal",
+    "Crossover": "Crossover Thrash",
+    "Rock": "Hard Rock",
+}
+
+TOP_GENRES = [
+    "Death Metal", "Black Metal", "Thrash Metal", "Heavy Metal",
+    "Melodic Death Metal", "Grindcore", "Power Metal", "Groove Metal",
+    "Metalcore", "Brutal Death Metal", "Progressive Metal", "Hard Rock",
+    "Doom Metal", "Raw Black Metal", "Sludge Metal", "Crossover Thrash",
+    "Stoner Metal", "Gothic Metal", "Deathcore", "Speed Metal",
+    "Symphonic Metal", "Folk Metal", "Atmospheric Black Metal",
+    "Industrial Metal", "Symphonic Black Metal", "Technical Death Metal",
+    "Progressive Death Metal", "Melodic Black Metal", "Post-Metal",
+    "Viking Metal", "Pagan Metal", "Punk", "Alternative Metal",
+    "Ambient", "Depressive Black Metal", "Melodic Metalcore",
+    "Blackened Death Metal", "Drone Metal", "Post-Black Metal",
+    "Funeral Doom Metal", "Crust Punk", "Grunge", "Djent",
+    "Melodic Power Metal", "Nu-Metal", "Psychedelic",
+    "Post-Hardcore", "Post-Punk", "War Metal", "Neofolk",
+]
+
 
 def preprocess_features(
     features_csv: str | Path,
+    metal_bands_csv: str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Load and preprocess the feature CSV into a numeric matrix.
 
@@ -49,13 +82,14 @@ def preprocess_features(
       2. Z-score normalise the 7 numeric columns.
       3. One-hot encode key_key (12 classes).
       4. Binary-encode key_scale (major=1, minor=0).
+      5. Multi-hot encode genre tags from metal_bands.csv (v2).
 
     Returns
     -------
     band_ids : ndarray of shape (N,)
         MA band IDs in row order.
     feature_matrix : ndarray of shape (N, D), float32
-        Preprocessed feature vectors.  D ~ 7 + 12 + 1 = 20.
+        Preprocessed feature vectors.  D ~ 7 + 12 + 1 + 50 = 70.
     feature_names : list[str]
         Human-readable column names for each dimension.
     """
@@ -95,7 +129,38 @@ def preprocess_features(
     else:
         scale_vals = np.zeros((len(df), 0), dtype=np.float32)
 
-    feature_matrix = np.hstack([numeric_vals, key_onehot, scale_vals])
+    # --- Multi-hot encode genre tags (v2) ---
+    genre_matrix = np.zeros((len(df), 0), dtype=np.float32)
+    if metal_bands_csv and Path(metal_bands_csv).exists():
+        mb_df = pd.read_csv(metal_bands_csv, low_memory=False)
+        genre_map: dict[int, list[str]] = {}
+        for _, row in mb_df.iterrows():
+            try:
+                bid = int(row["Band ID"])
+            except (ValueError, TypeError):
+                continue
+            genre_str = row.get("Genre", "")
+            if pd.isna(genre_str) or not genre_str:
+                continue
+            tokens = [GENRE_NORMALIZE.get(t.strip(), t.strip()) for t in genre_str.split("/")]
+            genre_map[bid] = tokens
+
+        genre_to_idx = {g: i for i, g in enumerate(TOP_GENRES)}
+        genre_matrix = np.zeros((len(df), len(TOP_GENRES)), dtype=np.float32)
+        for i, bid in enumerate(band_ids):
+            for tag in genre_map.get(int(bid), []):
+                if tag in genre_to_idx:
+                    genre_matrix[i, genre_to_idx[tag]] = 1.0
+
+        # Scale genre features to compete with z-scored audio (which have std~1)
+        GENRE_WEIGHT = 1.0
+        genre_matrix *= GENRE_WEIGHT
+
+        feature_names.extend([f"genre_{g.lower().replace(' ', '_')}" for g in TOP_GENRES])
+        n_with = (genre_matrix.sum(axis=1) > 0).sum()
+        print(f"  Genre features: {len(TOP_GENRES)} dims, {n_with}/{len(df)} bands matched (weight={GENRE_WEIGHT})")
+
+    feature_matrix = np.hstack([numeric_vals, key_onehot, scale_vals, genre_matrix])
 
     return band_ids, feature_matrix, feature_names
 
