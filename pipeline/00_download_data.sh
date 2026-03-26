@@ -34,7 +34,7 @@ kaggle_download() {
 
 # --- MusicBrainz: dump tables ---
 mb_download() {
-    local needed_files=("artist" "url" "l_artist_url")
+    local needed_files=("artist" "url" "l_artist_url" "artist_credit_name" "recording" "release_group" "release" "medium" "track")
     local all_present=true
 
     for f in "${needed_files[@]}"; do
@@ -45,7 +45,7 @@ mb_download() {
     done
 
     if $all_present; then
-        echo "[musicbrainz] All 3 table files already exist, skipping."
+        echo "[musicbrainz] All ${#needed_files[@]} table files already exist, skipping."
         return
     fi
 
@@ -66,13 +66,19 @@ mb_download() {
         echo "[musicbrainz] Tarball already downloaded."
     fi
 
-    # Extract only the 3 tables we need
-    echo "[musicbrainz] Extracting artist, url, l_artist_url..."
+    # Extract all tables we need (linkage + album chain)
+    echo "[musicbrainz] Extracting artist, url, l_artist_url, artist_credit_name, recording, release_group, release, medium, track..."
     tar -xjf "$tarball" -C "$MB_DIR" \
         --strip-components=1 \
         mbdump/artist \
         mbdump/url \
-        mbdump/l_artist_url
+        mbdump/l_artist_url \
+        mbdump/artist_credit_name \
+        mbdump/recording \
+        mbdump/release_group \
+        mbdump/release \
+        mbdump/medium \
+        mbdump/track
 
     # Verify extraction
     for f in "${needed_files[@]}"; do
